@@ -27,7 +27,6 @@ jobs:
 
       - name: Poetry Publish
         run: |
-          poetry publish --build -r pypi
+          poetry publish --build
         env:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.POETRY_PYPI_TOKEN_PYPI }}
-          POETRY_REPOSITORIES_PYPI_URL: ${{ vars.POETRY_REPOSITORIES_PYPI_URL }}
