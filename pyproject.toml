@@ -1,0 +1,36 @@
+[tool.poetry]
+name = "canary-cli"
+version = "0.1.dev0"
+description = "command line interface for canary-cd"
+authors = [
+    "Dominique Rehborn <dominique@rehborn.dev>"
+]
+readme = "README.md"
+license = "Apache-2.0"
+
+[tool.poetry.urls]
+# https://peps.python.org/pep-0753/#well-known-labels
+documentation = "https://docs.rehborn.dev"
+source = "https://github.com/rehborn/canary-cli.git"
+
+[tool.poetry.scripts]
+ccd = "canary_cli.main:app"
+
+[tool.poetry.dependencies]
+python = "~3.12"
+typer = "^0.15.1"
+questionary = "^2.0.1"
+requests = "^2.32.3"
+pyyaml = "^6.0.2"
+python-dotenv = "^1.0.1"
+humanize = "^4.11.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.4"
+coverage = "^7.6.9"
+pylint = "^3.3.3"
+pyinstaller = "^6.11.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
