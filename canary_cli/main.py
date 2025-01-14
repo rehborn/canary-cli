@@ -64,8 +64,9 @@ class API:
 
     def request(self, method: Literal['GET', 'POST', 'PUT', 'DELETE'], path: str, raw_data=None, data: dict = None,
                 files=None):
+        url = '/'.join([self.api_url, path])
         try:
-            r = requests.request(method, '/'.join([self.api_url, path, '']), headers=self.headers, json=data,
+            r = requests.request(method, url, headers=self.headers, json=data,
                                  files=files, data=raw_data)
         except Exception as e:
             print(f"[bold red]Exception: {type(e).__name__}[/bold red]")
