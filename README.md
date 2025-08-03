@@ -31,8 +31,12 @@ pipx install canary-cli
 # Development
 
 ```shell
-typer ./canary_cli/main.py run 
-poetry install
-ccd --install-completion
-source $HOME/.bash_completions/ccd.sh
+uv sync
+canary-cli --install-completion
+source $HOME/.bash_completions/canary-cli.sh
+```
+
+**Run with typer**
+```shell
+uv run typer ./canary_cli/main.py run 
 ```
