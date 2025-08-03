@@ -20,7 +20,7 @@ documentation = "https://docs.rehborn.dev"
 source = "https://github.com/rehborn/canary-cli.git"
 
 [project.scripts]
-ccd = "canary_cli.main:app"
+canary-cli = "canary_cli.main:app"
 
 [build-system]
 requires = ["hatchling"]
