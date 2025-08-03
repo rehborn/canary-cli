@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import configparser
 import os
+import re
 import sys
 import time
 import tomllib
@@ -8,6 +9,7 @@ import typing
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from typing import List, Optional
 
 import humanize
 import questionary
@@ -28,6 +30,11 @@ DEFAULT_CONFIG = {
     'API_URL': 'http://localhost:8001',
     'API_KEY': 'root',
 }
+
+GITHUB_REPO_PATTERN = r'^(?P<user>[\w\d-]+)/(?P<repo>[\w\d-]+)(?:@(?P<branch>[\w.\-/]+))?$'
+
+SUCCESS = "[bold bright_green]:heavy_check_mark:[/bold bright_green]"
+FAIL = "[bold bright_red]:cross_mark:[/bold bright_red]"
 
 
 class Config:
@@ -64,8 +71,9 @@ class API:
 
     def request(self, method: Literal['GET', 'POST', 'PUT', 'DELETE'], path: str, raw_data=None, data: dict = None,
                 files=None):
+        url = '/'.join([self.api_url, path])
         try:
-            r = requests.request(method, '/'.join([self.api_url, path, '']), headers=self.headers, json=data,
+            r = requests.request(method, url, headers=self.headers, json=data,
                                  files=files, data=raw_data)
         except Exception as e:
             print(f"[bold red]Exception: {type(e).__name__}[/bold red]")
@@ -118,6 +126,13 @@ def print_kv(items):
             v = f'[white]{value}[/white]'
         table.add_row(k, v)
     console.print(table)
+
+
+def print_result_details(result):
+    if 'detail' in result:
+        console.print(f"{FAIL} {result['detail']}")
+    else:
+        console.print(f"{SUCCESS}")
 
 
 table_options = {
@@ -197,15 +212,35 @@ config_app = typer.Typer(**typer_options)
 app.add_typer(config_app, name="config", help='Manage Config')
 
 
+def print_table(result: dict, columns: list, fields):
+    if not result:
+        print("No Results")
+        return
+
+    table = Table(**table_options)  # box=None) # , show_header=False)
+
+    for column in columns:
+        table.add_column(column.upper())
+
+    for r in result:
+        row = []
+        for field in fields:
+            if not r.get(field):
+                row.append('-')
+            elif field.endswith('_at'):
+                row.append(time_since(r[field]))
+            elif r[field].startswith('git@github.com:'):
+                row.append(r[field].strip('git@github.com:'))
+            else:
+                row.append(r[field])
+        table.add_row(*row)
+    console.print(table)
+
+
 @config_app.command('list', help='list config')
 def config_list():
     result = api.get('config')
-    print(result)
-    table = Table(box=None, show_header=False)
-    for c in result:
-        k, v = c['key'], c['value']
-        table.add_row(f'[cyan]{k}[/cyan]', f'{v}')
-    console.print(table)
+    print_table(result, ['Key', 'Value'], ['key', 'value'])
 
 
 @config_app.command('set', help='set config')
@@ -219,84 +254,78 @@ def config_unset(key: Annotated[str, typer.Argument(autocompletion=complete_conf
 
 
 # Git Keys
-def complete_git_keys():
-    keys = api.get('git-key')
+def complete_auth():
+    keys = api.get('auth')
     return [d['name'] for d in keys] if keys else []
 
 
-git_key_app = typer.Typer(**typer_options)
-app.add_typer(git_key_app, name="git-key", help="Manage Git-Keys")
+auth_app = typer.Typer(**typer_options)
+app.add_typer(auth_app, name="auth", help="Manage Authentication Keys")
 
 
-@git_key_app.command(name='list', help='List all Git Keys')
-def git_key_list():
-    results = api.get('git-key')
-    if not results:
-        print("No Git Keys found")
+@auth_app.command(name='list', help='show all Keys')
+def auth_list(filter: Annotated[str, typer.Argument()] = ''):
+    result = api.get(f'auth?filter_by={filter}')
+    if not result:
+        print("No Authentication Keys found")
         return
-
-    table = Table(**table_options)
-
-    for column in ['Name', 'Type', 'Updated']:
-        table.add_column(column)
-
-    for r in results:
-        table.add_row(r['name'], r['auth_type'], time_since(r['updated_at']))
-    console.print(table)
+    print_table(result, ['Name', 'Type', 'Updated'], ['name', 'auth_type', 'updated_at'])
 
 
-@git_key_app.command(name='view', help='View Git Key')
-def git_key_view(name: Annotated[str, typer.Argument(autocompletion=complete_git_keys)]):
-    result = api.get(f'git-key/{name}')
+@auth_app.command(name='view', help='show Key details')
+def auth_view(name: Annotated[str, typer.Argument(autocompletion=complete_auth)]):
+    result = api.get(f'auth/{name}')
     print_kv(result)
 
 
-@git_key_app.command(name='create', help='Create a new Git Key')
-def git_key_create(name: Annotated[str | None, typer.Argument()] = None,
-                   auth_type: Annotated[str | None, typer.Option('--type')] = None,
-                   auth_key: Annotated[str | None, typer.Option('--key')] = None,
-                   key_file: Annotated[
-                       typer.FileText | None, typer.Option('--import', autocompletion=complete_files)] = None,
-                   ):
-    if key_file:
-        auth_key = key_file.read()
+@auth_app.command(name='create', help='create Key')
+def auth_create(name: Annotated[str | None, typer.Argument()] = None,
+                ssh: Annotated[bool | None, typer.Option('--ssh')] = None,
+                pat: Annotated[str | None, typer.Option('--pat')] = None,
+                import_file: Annotated[
+                    typer.FileText | None, typer.Option('--import', autocompletion=complete_files)] = None,
+                ):
+    auth_type = None
+    auth_key = None
+
+    if import_file:
         auth_type = 'ssh'
+        auth_key = import_file.read()
         if not name:
-            name = key_file.name
-
-    if not name:
-        try:
-            _default = '{}-key'.format(os.path.basename(os.getcwd()))
-            name = questionary.text("Key Name", default=_default).unsafe_ask()
-        except KeyboardInterrupt:
-            sys.exit(1)
-
-    if not auth_type:
+            name = import_file.name
+    elif ssh:
+        auth_type = 'ssh'
+    elif pat:
+        auth_type = 'pat'
+        auth_key = pat
+    else:
         try:
             auth_type = questionary.select("Authentication Method", choices=['ssh', 'pat']).unsafe_ask()
+            if auth_type == 'pat':
+                auth_key = questionary.text("PAT").unsafe_ask()
         except KeyboardInterrupt:
             sys.exit(1)
 
     data = {
-        'name': name,
+        'name': name.replace(' ', '_') if name else None,
         'auth_type': auth_type,
         'auth_key': auth_key,
     }
 
-    if auth_type == 'pat' and not data['auth_key']:
-        print("[red]authentication method [bold cyan]pat[/bold cyan] requires a value for --key[/red]")
-        sys.exit(1)
+    result = api.create('auth', data=data)
+    if auth_type == 'ssh' and result.get('public_key'):
+        print(result['public_key'])
+    else:
+        print_kv(result)
 
-    print(api.create('git-key', data=data))
 
-
-@git_key_app.command(name='delete', help='Delete a Git Key')
-def git_key_delete(name: Annotated[str | None, typer.Argument(autocompletion=complete_git_keys)] = None):
+@auth_app.command(name='delete', help='delete Key')
+def auth_delete(name: Annotated[str | None, typer.Argument(autocompletion=complete_auth)] = None):
     if not name:
-        name = questionary.select("Select Key", choices=complete_git_keys()).ask()
+        name = questionary.select("Select Key", choices=complete_auth()).ask()
     if name:
         print(f"Deleting Git Key [bold cyan]{name}[/bold cyan]")
-        console.print(api.delete(f'git-key/{name}'))
+        console.print(api.delete(f'auth/{name}'))
 
 
 # Projects
@@ -304,45 +333,7 @@ project_app = typer.Typer(**typer_options)
 app.add_typer(project_app, name="project", help="Manage Projects")
 
 
-def complete_projects():
-    _projects = api.get('project')
-    return [p['name'] for p in _projects] if _projects else []
-
-
-@project_app.command(name='list', help='List available Projects')
-def project_list():
-    projects = api.get('project')
-    if not projects:
-        print("No Projects found")
-        return
-
-    table = Table(**table_options)
-
-    for column in ['Name', 'Remote', 'Key', 'Updated']:
-        table.add_column(column)
-
-    for p in projects:
-        key = '-'
-        if p['git_key']:
-            key = '{auth_type}:{name}'.format(**p['git_key'])
-
-        table.add_row(p['name'], p['remote'] or '-', key, time_since(p['updated_at']))
-    console.print(table)
-
-
-@project_app.command(name='view', help='get Projects details')
-def project_view(name: Annotated[str, typer.Argument(autocompletion=complete_projects)],
-                 web: Annotated[bool | None, typer.Option('--web', help='Open Page in Browser')] = False):
-    result = api.get(f'project/{name}')
-    print_kv(result)
-
-    if web:
-        url = cliconfig['API_URL']
-        console.print(f"Opening {url} ..")
-        typer.launch(url)
-
-
-def get_remote_from_git_config(path: str) -> str or None:
+def get_remote_from_git_config(path: str) -> Optional[str]:
     git_config = Path(path, '.git', 'config')
     if os.path.isfile(git_config):
         with open(git_config, 'r', encoding='utf-8') as f:
@@ -352,81 +343,165 @@ def get_remote_from_git_config(path: str) -> str or None:
                 remote = config['remote "origin"']['url']
                 print(f"[green]found remote origin:[/green] {remote}")
                 return remote
-    return
+    return None
 
 
-@project_app.command(name='create', help='Create a new Project')
+def parse_remote(remote, branch):
+    match = re.match(GITHUB_REPO_PATTERN, remote)
+    if match:
+        remote = f"git@github.com:{match.group('user')}/{match.group('repo')}.git"
+        if not branch:
+            if match.group('branch'):
+                branch = match.group('branch')
+    return remote, branch
+
+
+def complete_projects():
+    _projects = api.get('project')
+    return [p['name'] for p in _projects] if _projects else []
+
+
+@project_app.command(name='list', help='List available Projects')
+def project_list(filter: Annotated[str, typer.Argument()] = ''):
+    result = api.get(f'project?filter_by={filter}')
+    if not result:
+        print("No Projects found")
+        return
+
+    print_table(result, ['Name', 'Remote', 'Branch', 'Key', 'Updated'],
+                ['name', 'remote', 'branch', 'key', 'updated_at'])
+
+
+@project_app.command(name='view', help='show Projects details')
+def project_view(project: Annotated[str, typer.Argument(autocompletion=complete_projects)],
+                 secrets: Annotated[bool | None, typer.Option('--secrets', help='Show Project Secrets')] = False,
+                 web: Annotated[bool | None, typer.Option('--web', help='Open Page in Browser')] = False):
+    if secrets:
+        result = api.get(f'secret/{project}')
+        print(f"Secrets for [bold bright_cyan]{project}[/bold bright_cyan]")  # for ")
+        print_table(result, ['KEY', 'VALUE', 'Updated'], ['key', 'value', 'updated_at'])
+
+    else:
+        result = api.get(f'project/{project}')
+        print_kv(result)
+
+    if web:
+        url = cliconfig['API_URL']
+        console.print(f"Opening {url} ..")
+        typer.launch(url)
+
+
+@project_app.command(name='create', help='create a new Project')
 def project_create(name: Annotated[str | None, typer.Argument()] = None,
                    remote: Annotated[str | None, typer.Option('--remote')] = None,
-                   key: Annotated[str | None, typer.Option('--key', autocompletion=complete_git_keys)] = None):
-    data = {}
-
-    if not name:
-        try:
-            name = questionary.text("Enter a Project Name", default=os.path.basename(os.getcwd())).unsafe_ask()
-        except KeyboardInterrupt:
-            sys.exit(1)
-
-    if not name:
-        print("Project Name cannot be empty")
-        sys.exit(1)
-    data['name'] = name
-
+                   branch: Annotated[str | None, typer.Option('--branch')] = None,
+                   key: Annotated[str | None, typer.Option('--key', autocompletion=complete_auth)] = None):
+    # remote and branch
     if not remote:
         try:
             remote = questionary.text("Enter Git Remote", default='').unsafe_ask()
         except KeyboardInterrupt:
             sys.exit(1)
-    else:
+
+    if remote:
         if os.path.isdir(remote):
             remote = get_remote_from_git_config(remote)
-
-    if not remote:
+        else:
+            remote, branch = parse_remote(remote, branch)
+            print(remote, branch)
+    else:
         print(f"[red]no remote found[/red]")
         sys.exit(1)
-    data['remote'] = remote
 
+    if name == '.':
+        name = Path('.').resolve().name
+
+    data = {
+        'name': name.replace('/', '-') if name else None,
+        'remote': remote,
+        'branch': branch,
+    }
+
+    # authentication key
     if not key:
         if len(complete_config_keys()) > 0:
             print("[yellow]you have no git keys, skipping selection[/yellow]")
         else:
             try:
-                key = questionary.select("Select a Git Key", choices=complete_git_keys()).unsafe_ask()
+                key = questionary.select("Select a Git Key", choices=complete_auth()).unsafe_ask()
             except KeyboardInterrupt:
                 sys.exit(1)
-
     if key:
         data['key'] = key
 
-    if name:
-        print(f"Creating project [bold cyan]{name}[/bold cyan]")
+    with console.status(f"Creating Project.. ", refresh_per_second=20):
         result = api.create('project', data)
-        print_kv(result)
+        print(f"[bold bright_cyan]{result['name']}[/bold bright_cyan]")
+    print_kv(result)
 
 
 @project_app.command(name='update', help='Update a Project')
-def project_update(name: Annotated[str, typer.Argument(autocompletion=complete_projects)],
+def project_update(project: Annotated[str, typer.Argument(autocompletion=complete_projects)],
                    remote: Annotated[str, typer.Option()] = None,
-                   key: Annotated[str | None, typer.Option('--key', autocompletion=complete_git_keys)] = None):
-    data = {}
-    if not remote and not key:
-        print("nothing to update, check --help for more info")
-        sys.exit(1)
+                   key: Annotated[str | None, typer.Option(autocompletion=complete_auth)] = None,
+                   branch: Annotated[str, typer.Option()] = None,
+                   set: Annotated[Optional[List[str]], typer.Option()] = None,
+                   unset: Annotated[Optional[List[str]], typer.Option()] = None,
+                   file: Annotated[typer.FileText, typer.Option('--import-env', autocompletion=complete_files)] = None,
+                   ):
+    if not any([remote, key, branch, set, unset, file]):
+        print("option required: --help")
+        exit(1)
 
+    data = {}
+
+    # remote and branch
     if remote:
         if os.path.isdir(remote):
             remote = get_remote_from_git_config(remote)
-        print(f"[green]found remote origin:[/green] {remote}")
+        else:
+            remote, branch = parse_remote(remote, branch)
 
-    if remote:
         data['remote'] = remote
 
     if key:
         data['key'] = key
 
-    print(f"Updating project [bold cyan]{name}[/bold cyan]")
-    result = api.update(f'project/{name}', data)
-    print_kv(result)
+    if branch:
+        data['branch'] = branch
+
+    if remote or branch or key:
+        print(f"Updating project [bold cyan]{project}[/bold cyan]")
+        result = api.update(f'project/{project}', data)
+        print_kv(result)
+
+    # secrets
+    if set:
+        for s in set:
+            try:
+                key, value = s.split("=", 1)
+            except ValueError:
+                print(f"skipping {s}")
+                continue
+
+            with console.status(f"Pushing Secret.. ", refresh_per_second=20):
+                result = api.update(f'secret/{project}', data={'key': key.upper(), 'value': value})
+                print(f"[bold bright_cyan]{result['key']}[/bold bright_cyan] :heavy_check_mark:")
+
+    if unset:
+        for key in unset:
+            with console.status(f"Deleting Secret.. ", refresh_per_second=20):
+                result = api.delete(f'secret/{project}/{key}')
+                print(f"[bold bright_cyan]{key}[/bold bright_cyan] :heavy_check_mark:")
+
+    # import secrets from file
+    if file:
+        print(f"importing [yellow]{file.name}[/yellow]")
+        imported_env = dotenv_values(stream=file)
+        for key, value in imported_env.items():
+            print(f"- [bold cyan]{key}[/bold cyan]: {value} .. ", end='')
+            api.update(f'secret/{project}', data={'key': key, 'value': value})
+            print("[bold green]:heavy_check_mark:[/bold green]")
 
 
 @project_app.command(name='delete', help='Delete a Project')
@@ -441,18 +516,40 @@ def project_delete(name: Annotated[str, typer.Argument(autocompletion=complete_p
 @project_app.command(name='deploy', help='Run deployment for Environment')
 def project_deploy(
         name: Annotated[str, typer.Argument(autocompletion=complete_projects)],
-        environment: Annotated[str, typer.Argument()] = 'default',
+        start: Annotated[bool, typer.Option('--start', help='start deployment')] = None,
+        stop: Annotated[bool, typer.Option('--stop', help='stop deployment')] = None,
+        status: Annotated[bool | None, typer.Option('--status', help='get status')] = None,
+        logs: Annotated[bool | None, typer.Option('--logs', help='get logs')] = None,
 ):
-    result = api.get(f'project/{name}/deploy/{environment}')
-    print(result)
+    if status or logs:
+        result = api.get(f'deploy/{name}/status')
+
+        if status and 'ps' in result:
+            print_table(
+                result['ps'],
+                ['Name', 'Image', 'State', 'Status'],
+                ['Name', 'Image', 'State', 'Status'])
+
+        if logs and 'logs' in result:
+            table = Table(**table_options, show_header=False)
+            for line in result['logs'].split('\n'):
+                table.add_row(line)
+            console.print(table)
+
+    elif stop:
+        result = api.get(f'deploy/{name}/stop')
+    else:
+        result = api.get(f'deploy/{name}/start')
+
+    if 'detail' in result:
+        print(result['detail'])
 
 
 @project_app.command(name='status', help='Get deployment Status Environment')
 def project_status(
         name: Annotated[str, typer.Argument(autocompletion=complete_projects)],
-        environment: Annotated[str, typer.Argument()] = 'default',
 ):
-    result = api.get(f'project/{name}/status/{environment}')
+    result = api.get(f'project/{name}/status')
 
     if 'ps' in result:
         table = Table(**table_options, title='Container')
@@ -475,152 +572,9 @@ def project_refresh_token(
 ):
     result = api.get(f'project/{name}/refresh-token')
     with console.status(f"Generating New Token for [bold cyan]{name}[/bold cyan]..."):
-        print(f"Refreshing Project Deploy Token for [bold cyan]{name}[/bold cyan]")
-        print(f"[yellow]{result['token']}[/yellow]")
-
-
-# environments
-env_app = typer.Typer(**typer_options)
-app.add_typer(env_app, name="env", help="Manage Environments and Variables")
-
-
-@env_app.callback()
-def env_callback(
-        ctx: typer.Context,
-        project: Annotated[str, typer.Argument(autocompletion=complete_projects, show_default=False)],
-):
-    ctx.obj = SimpleNamespace(project=project)
-
-
-@env_app.command('list', help='List Environments')
-def env_list(
-        ctx: typer.Context,
-):
-    table = Table(**table_options)
-    print(f"environments for project [bold cyan]{ctx.obj.project}[/bold cyan]")
-    envs = api.get(f'env/{ctx.obj.project}')
-
-    if not envs:
-        print("No Environments found")
-        return
-    for column in ['name', 'branch', 'Updated']:
-        table.add_column(column)
-    for p in envs:
-        table.add_row(p['name'], p['branch'], time_since(p['updated_at']))
-    console.print(table)
-
-
-@env_app.command('view', help='Show Environment Variables')
-def env_view(
-        ctx: typer.Context,
-        environment: Annotated[str | None, typer.Argument()] = None
-):
-    table = Table(**table_options)
-    variables = api.get(f'env/{ctx.obj.project}/{environment}')
-    print(f"Environment variables for [bold cyan]{environment}[/bold cyan]")  # for ")
-
-    if not variables:
-        print("No Variables found")
-        return
-
-    for column in ['KEY', 'VALUE', 'Updated']:
-        table.add_column(column)
-    for p in variables:
-        table.add_row(p['key'], p['value'], time_since(p['updated_at']))
-
-    console.print(table)
-
-
-@env_app.command('create', help='Create an environment')  # , no_args_is_help=True)
-def env_create(  # name: Annotated[str, typer.Argument()],
-        ctx: typer.Context,
-        environment: Annotated[str | None, typer.Argument()] = None,
-        branch: Annotated[str | None, typer.Option('--branch')] = None,
-):
-    if not environment:
-        environment = questionary.text("Enter Environment Name").ask()
-
-    if not branch:
-        branch = questionary.text("Enter corresponding Branch", default='main').ask()
-
-    if environment and branch:
-        print(
-            f"Creating environment [cyan]{environment}[/cyan] ([green]{branch}[/green]) for [magenta]{ctx.obj.project}[/magenta]")
-        result = api.create(f'env/{ctx.obj.project}', data={'name': environment, 'branch': branch})
-        print_kv(result)
-
-
-@env_app.command('update', help='Update an environment')
-def env_update(
-        ctx: typer.Context,
-        environment: Annotated[str | None, typer.Argument()] = None,
-        branch: Annotated[str | None, typer.Option('--branch')] = None,
-):
-    print(f"Updating Environment [bold cyan]{environment}[/bold cyan]")
-    data = {}
-    if not branch:
-        print("nothing to update, check --help for more info")
-        sys.exit(1)
-    if branch:
-        data['branch'] = branch
-    console.print(api.update(f'env/{ctx.obj.project}/{environment}', data=data))
-
-
-@env_app.command('delete', help='Delete an environment')
-def env_delete(
-        ctx: typer.Context,
-        environment: Annotated[str | None, typer.Argument()] = None,
-):
-    if not environment:
-        envs = api.get(f'env/{ctx.obj.project}')
-        environment = questionary.rawselect("Select an Environment for removal", choices=envs).ask()
-
-    if environment:
-        print(f"Deleting {environment} for {ctx.obj.project}")
-        print(api.delete(f'env/{ctx.obj.project}/{environment}'))
-
-
-@env_app.command('set', help='Set an environment variable', no_args_is_help=True)
-def env_set(
-        ctx: typer.Context,
-        environment: str = typer.Argument(default='default'),
-        key: str = typer.Argument(),
-        value: str = typer.Argument(),
-
-):
-    key = key.upper()
-    print(ctx.obj.project, environment, key, value)
-    print(f"{key}={value}")
-    print(
-        api.update(f'env/{ctx.obj.project}/{environment}', data={'key': key, 'value': value})
-    )
-
-
-@env_app.command('unset', help='Delete an environment or variable')
-def env_unset(
-        ctx: typer.Context,
-        environment: str = typer.Argument(default='default'),
-        key: str = typer.Argument(),
-):
-    print(f"{key} on {environment} for {ctx.obj.project}")
-    print(
-        api.delete(f'env/{ctx.obj.project}/{environment}/{key}')
-    )
-
-
-@env_app.command('import', help='Import environment variables from file')
-def env_import(
-        ctx: typer.Context,
-        environment: Annotated[str, typer.Argument()],
-        file: Annotated[typer.FileText, typer.Argument(autocompletion=complete_files)],
-):
-    print(
-        f"importing [yellow]{file.name}[/yellow] to environment [red]{environment}[/red] for [bold cyan]{ctx.obj.project}[/bold cyan]")
-    imported_env = dotenv_values(stream=file)
-    for key, value in imported_env.items():
-        print(f"set [bold cyan]{key}[/bold cyan]: {value} .. ", end='')
-        api.update(f'env/{ctx.obj.project}/{environment}', data={'key': key, 'value': value})
-        print("[bold][[green]OK[/green]][/bold]")
+        print(f"New Deploy Token for [bold bright_cyan]{name}[/bold bright_cyan]")
+        print(f"[bright_red]{result['token']}[/bright_red]")
+    print('curl -X POST ' + os.path.join(cliconfig['API_URL'], 'webhook/project', result['token']))
 
 
 # Pages
@@ -637,33 +591,25 @@ def complete_pages():
 
 @page_app.command('list', help='List pages')
 def page_list():
-    pages = api.get('page')
-
-    if not pages:
-        print("No Pages found")
-        return
-
-    table = Table(**table_options)
-
-    for column in ['FQDN', 'Updated']:
-        table.add_column(column)
-
-    for p in pages:
-        table.add_row(p['fqdn'], time_since(p['updated_at']))
-
-    console.print(table)
+    result = api.get('page')
+    print_table(result, ['FQDN', 'Updated'], ['fqdn', 'updated_at'])
 
 
 @page_app.command('create', help='Create new page')
 def page_create(fqdn: Annotated[str, typer.Argument(help='FQDN')],
-                redirects: Annotated[typing.List[str] | None, typer.Option(help="--redirects")] = None):
-    print(f"Creating page [bold cyan]{fqdn}[/bold cyan]")
-    print(api.create('page', data={'fqdn': fqdn}))
+                cors_hosts: Annotated[typing.List[str] | None, typer.Option('--cors')] = None,
+                redirect: Annotated[typing.List[str] | None, typer.Option('--redirect')] = None):
+    console.print(f"Creating Page [bold bright_cyan]{fqdn}[/bold bright_cyan].. ", end='')
+    cors_hosts = ','.join(cors_hosts) if cors_hosts else None
+    result = api.create('page', data={'fqdn': fqdn, 'cors_hosts': cors_hosts})
+    print_result_details(result)
 
-    if redirects:
-        for redirect in redirects:
-            print(f"Creating Redirect: {redirect}")
-            result = api.create('redirect', data={'source': redirect, 'destination': fqdn})
+    if redirect:
+        for source in redirect:
+            with console.status(f"Creating Redirect.. "):
+                print(f"Redirect: {source}", end='')
+                result = api.create('redirect', data={'source': source, 'destination': fqdn})
+                print_result_details(result)
 
 
 @page_app.command('delete', help='Delete page')
@@ -697,12 +643,12 @@ def page_deploy(fqdn: Annotated[str, typer.Argument(help='FQDN', autocompletion=
 
     with console.status(f"Uploading [bold cyan]{"filename"}[/bold cyan]..."):
         with open(path, 'rb') as file:
-            response = api.upload(f'page/{fqdn}/deploy', file=file)
+            response = api.upload(f'upload/{fqdn}', file=file)
 
         url = f'https://{fqdn}/'
         console.print("Successfully Uploaded")
 
-    console.print(":heavy_check_mark-emoji: :rocket-emoji: Deployed ", url)
+    console.print(":heavy_check_mark: Deployed ", url)
     if view:
         typer.launch(url)
 
@@ -714,21 +660,11 @@ app.add_typer(redirect_app, name="redirect", help="Manage Redirects")
 
 @redirect_app.command('list', help='List Redirects')
 def redirect_list():
-    redirects = api.get('redirect')
-
-    if not redirects:
-        print("No Redirects found")
-        return
-
-    table = Table(**table_options)
-
-    for column in ['Source', 'Destination', 'Updated']:
-        table.add_column(column)
-
-    for p in redirects:
-        table.add_row(p['source'], p['destination'], time_since(p['updated_at']))
-
-    console.print(table)
+    result = api.get('redirect')
+    print_table(result,
+                ['Source', 'Destination', 'Updated'],
+                ['source', 'destination', 'updated_at']
+                )
 
 
 @redirect_app.command('create', help='Delete Redirects')

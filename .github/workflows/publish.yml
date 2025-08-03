@@ -1,0 +1,35 @@
+name: Publish Package
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.version }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.13
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install Dependencies
+        run: uv sync --locked
+
+      - name: Publish
+        run: |
+          uv build
+          uv publish --token ${{ secrets.UV_PUBLISH_TOKEN }}
