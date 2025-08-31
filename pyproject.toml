@@ -7,7 +7,7 @@ requires-python = ">=3.12,<4"
 readme = "README.md"
 license = "Apache-2.0"
 dependencies = [
-    "typer (>=0.16.0,<0.17.0)",
+    "typer (>=0.17.3,<0.18.0)",
     "questionary (>=2.1.0,<3.0.0)",
     "requests (>=2.32.3,<3.0.0)",
     "pyyaml (>=6.0.2,<7.0.0)",
