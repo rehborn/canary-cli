@@ -45,3 +45,8 @@ uv run typer ./canary_cli/main.py run
 ```shell
 uv run ruff check
 ```
+
+### Static Type Checker
+```shell
+uv run ty check
+```

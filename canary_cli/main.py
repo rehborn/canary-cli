@@ -65,7 +65,11 @@ class API:
         self.headers = {"Authorization": f"Bearer {api_key}"}
         self.api_url = api_url
 
-    def request(self, method: Literal['GET', 'POST', 'PUT', 'DELETE'], path: str, raw_data=None, data: dict = None,
+    def request(self,
+                method: Literal['GET', 'POST', 'PUT', 'DELETE'],
+                path: str,
+                raw_data: dict | None = None,
+                data: dict | None = None,
                 files=None):
         url = '/'.join([self.api_url, path])
         try:
@@ -329,7 +333,7 @@ project_app = typer.Typer(**typer_options)
 app.add_typer(project_app, name="project", help="Manage Projects")
 
 
-def get_remote_from_git_config(path: str) -> Optional[str]:
+def get_remote_from_git_config(path: str) -> str:
     git_config = Path(path, '.git', 'config')
     if os.path.isfile(git_config):
         with open(git_config, 'r', encoding='utf-8') as f:
@@ -339,7 +343,7 @@ def get_remote_from_git_config(path: str) -> Optional[str]:
                 remote = config['remote "origin"']['url']
                 print(f"[green]found remote origin:[/green] {remote}")
                 return remote
-    return None
+    return ''
 
 
 def parse_remote(remote, branch):
@@ -438,12 +442,13 @@ def project_create(name: Annotated[str | None, typer.Argument()] = None,
 
 @project_app.command(name='update', help='Update a Project')
 def project_update(project: Annotated[str, typer.Argument(autocompletion=complete_projects)],
-                   remote: Annotated[str, typer.Option()] = None,
+                   remote: Annotated[str | None, typer.Option()] = None,
                    key: Annotated[str | None, typer.Option(autocompletion=complete_auth)] = None,
-                   branch: Annotated[str, typer.Option()] = None,
+                   branch: Annotated[str | None, typer.Option()] = None,
                    set: Annotated[Optional[List[str]], typer.Option()] = None,
                    unset: Annotated[Optional[List[str]], typer.Option()] = None,
-                   file: Annotated[typer.FileText, typer.Option('--import-env', autocompletion=complete_files)] = None,
+                   file: Annotated[
+                       typer.FileText | None, typer.Option('--import-env', autocompletion=complete_files)] = None,
                    ):
     if not any([remote, key, branch, set, unset, file]):
         print("option required: --help")
@@ -501,7 +506,7 @@ def project_update(project: Annotated[str, typer.Argument(autocompletion=complet
 
 
 @project_app.command(name='delete', help='Delete a Project')
-def project_delete(name: Annotated[str, typer.Argument(autocompletion=complete_projects)] = None):
+def project_delete(name: Annotated[str | None, typer.Argument(autocompletion=complete_projects)] = None):
     if not name:
         name = questionary.select("Select a Project for removal", choices=complete_projects()).ask()
     if name:
@@ -512,10 +517,10 @@ def project_delete(name: Annotated[str, typer.Argument(autocompletion=complete_p
 @project_app.command(name='deploy', help='Run deployment for Environment')
 def project_deploy(
         name: Annotated[str, typer.Argument(autocompletion=complete_projects)],
-        start: Annotated[bool, typer.Option('--start', help='start deployment')] = None,
-        stop: Annotated[bool, typer.Option('--stop', help='stop deployment')] = None,
-        status: Annotated[bool | None, typer.Option('--status', help='get status')] = None,
-        logs: Annotated[bool | None, typer.Option('--logs', help='get logs')] = None,
+        start: Annotated[bool, typer.Option('--start', help='start deployment')] = False,
+        stop: Annotated[bool, typer.Option('--stop', help='stop deployment')] = False,
+        status: Annotated[bool, typer.Option('--status', help='get status')] = False,
+        logs: Annotated[bool, typer.Option('--logs', help='get logs')] = False,
 ):
     if status or logs:
         result = api.get(f'deploy/{name}/status')
@@ -596,8 +601,10 @@ def page_create(fqdn: Annotated[str, typer.Argument(help='FQDN')],
                 cors_hosts: Annotated[typing.List[str] | None, typer.Option('--cors')] = None,
                 redirect: Annotated[typing.List[str] | None, typer.Option('--redirect')] = None):
     console.print(f"Creating Page [bold bright_cyan]{fqdn}[/bold bright_cyan].. ", end='')
-    cors_hosts = ','.join(cors_hosts) if cors_hosts else None
-    result = api.create('page', data={'fqdn': fqdn, 'cors_hosts': cors_hosts})
+    hosts = None
+    if cors_hosts:
+        hosts = ','.join(cors_hosts)
+    result = api.create('page', data={'fqdn': fqdn, 'cors_hosts': hosts})
     print_result_details(result)
 
     if redirect:
