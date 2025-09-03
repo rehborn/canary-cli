@@ -1,6 +1,6 @@
 [project]
 name = "canary-cli"
-version = "0.1.dev2"
+version = "0.1.dev3"
 description = "command line interface for canary-cd"
 authors = [{ name = "Dominique Rehborn", email = "dominique@rehborn.dev" }]
 requires-python = ">=3.12,<4"
