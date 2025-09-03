@@ -3,12 +3,9 @@ import configparser
 import os
 import re
 import sys
-import time
-import tomllib
 import typing
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import List, Optional
 
 import humanize
@@ -21,7 +18,6 @@ from rich import print
 from rich.box import SIMPLE_HEAD as TABLE_STYLE
 from rich.console import Console
 from rich.table import Table
-from rich.tree import Tree
 from typing_extensions import Annotated, Literal
 
 CONFIG_DIR = Path.home() / '.config/ccd/'
@@ -161,7 +157,7 @@ app = typer.Typer(rich_markup_mode='rich', pretty_exceptions_enable=False, **typ
 console = Console()
 
 # CLI Config
-HELP_CONFIG = f"""
+HELP_CONFIG = """
 Configure CLI\n\n
 [cyan]
 ccd cli set API_KEY 
@@ -410,7 +406,7 @@ def project_create(name: Annotated[str | None, typer.Argument()] = None,
             remote, branch = parse_remote(remote, branch)
             print(remote, branch)
     else:
-        print(f"[red]no remote found[/red]")
+        print("[red]no remote found[/red]")
         sys.exit(1)
 
     if name == '.':
@@ -434,7 +430,7 @@ def project_create(name: Annotated[str | None, typer.Argument()] = None,
     if key:
         data['key'] = key
 
-    with console.status(f"Creating Project.. ", refresh_per_second=20):
+    with console.status("Creating Project.. ", refresh_per_second=20):
         result = api.create('project', data)
         print(f"[bold bright_cyan]{result['name']}[/bold bright_cyan]")
     print_kv(result)
@@ -484,13 +480,13 @@ def project_update(project: Annotated[str, typer.Argument(autocompletion=complet
                 print(f"skipping {s}")
                 continue
 
-            with console.status(f"Pushing Secret.. ", refresh_per_second=20):
+            with console.status("Pushing Secret.. ", refresh_per_second=20):
                 result = api.update(f'secret/{project}', data={'key': key.upper(), 'value': value})
                 print(f"[bold bright_cyan]{result['key']}[/bold bright_cyan] :heavy_check_mark:")
 
     if unset:
         for key in unset:
-            with console.status(f"Deleting Secret.. ", refresh_per_second=20):
+            with console.status("Deleting Secret.. ", refresh_per_second=20):
                 result = api.delete(f'secret/{project}/{key}')
                 print(f"[bold bright_cyan]{key}[/bold bright_cyan] :heavy_check_mark:")
 
@@ -606,7 +602,7 @@ def page_create(fqdn: Annotated[str, typer.Argument(help='FQDN')],
 
     if redirect:
         for source in redirect:
-            with console.status(f"Creating Redirect.. "):
+            with console.status("Creating Redirect.. "):
                 print(f"Redirect: {source}", end='')
                 result = api.create('redirect', data={'source': source, 'destination': fqdn})
                 print_result_details(result)
@@ -643,7 +639,7 @@ def page_deploy(fqdn: Annotated[str, typer.Argument(help='FQDN', autocompletion=
 
     with console.status(f"Uploading [bold cyan]{"filename"}[/bold cyan]..."):
         with open(path, 'rb') as file:
-            response = api.upload(f'upload/{fqdn}', file=file)
+            api.upload(f'upload/{fqdn}', file=file)
 
         url = f'https://{fqdn}/'
         console.print("Successfully Uploaded")
@@ -672,7 +668,7 @@ def redirect_create(
         source: Annotated[str, typer.Argument(help='FQDN')],
         destination: Annotated[str, typer.Argument(help='FQDN')]
 ):
-    print(api.create(f'redirect', data={'source': source, 'destination': destination}))
+    print(api.create('redirect', data={'source': source, 'destination': destination}))
 
 
 @redirect_app.command('update', help='Update Redirect')

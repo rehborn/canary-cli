@@ -40,3 +40,8 @@ source $HOME/.bash_completions/canary-cli.sh
 ```shell
 uv run typer ./canary_cli/main.py run 
 ```
+
+### Linter
+```shell
+uv run ruff check
+```
