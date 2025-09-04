@@ -7,6 +7,9 @@ on:
         required: true
         type: string
 
+env:
+  python-version: 3.13
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -18,13 +21,10 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.version }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: 3.13
-
-      - name: Install uv
+      - name: Set up Python ${{ env.python-version }}
         uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.python-version }}
 
       - name: Install Dependencies
         run: uv sync --locked
