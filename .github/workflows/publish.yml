@@ -22,7 +22,7 @@ jobs:
           ref: ${{ inputs.version }}
 
       - name: Set up Python ${{ env.python-version }}
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ env.python-version }}
 
